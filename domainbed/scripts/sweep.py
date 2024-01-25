@@ -32,7 +32,7 @@ class Job:
     INCOMPLETE = 'Incomplete'
     DONE = 'Done'
 
-    def __init__(self, train_args, sweep_output_dir):
+    def __init__(self, train_args, sweep_output_dir,resume):
         args_str = json.dumps(train_args, sort_keys=True)
         args_hash = hashlib.md5(args_str.encode('utf-8')).hexdigest()
         self.output_dir = os.path.join(sweep_output_dir, args_hash)
@@ -46,6 +46,8 @@ class Job:
             elif isinstance(v, str):
                 v = shlex.quote(v)
             command.append(f'--{k} {v}')
+        if resume:
+            command.append('--resume')
         self.command_str = ' '.join(command)
 
         if os.path.exists(os.path.join(self.output_dir, 'done')):
@@ -74,6 +76,7 @@ class Job:
         for job in tqdm.tqdm(jobs, leave=False):
             os.makedirs(job.output_dir, exist_ok=True)
         commands = [job.command_str for job in jobs]
+        #print(commands)
         launcher_fn(commands)
         print(f'Launched {len(jobs)} jobs!')
 
@@ -126,6 +129,57 @@ def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparam
                             train_args['hparams'] = hparams
                         args_list.append(train_args)
     return args_list
+def sam_idx_complemetary(flats,i,flat_ratio,ascend=True):
+    print(i)
+    indice=np.arange(flats[0].shape[0])
+    if(args.flat_ratio!=0):
+        total=int(indice.shape[0]*flat_ratio)
+        for j in len(flats):
+            #print(len(flats.keys()))
+            flat=flats[j]
+            indice1=np.argsort(flat)
+            if(ascend):
+                indice=np.intersect1d(indice,indice1[:total])
+            else:
+                indice=np.intersect1d(indice,indice1[-total:])
+        this_indice=indice[i::len(flats)]
+        return this_indice
+    else:
+        return np.array([-1])
+def make_args_list_sp(n_trials, dataset_names, algorithms, n_hparams_from, n_hparams, steps,
+    data_dir, task, holdout_fraction, single_test_envs, hparams):
+    args_list = []
+    for dataset in dataset_names:
+        for algorithm in algorithms:
+            if single_test_envs:
+                all_test_envs = [
+                    [i] for i in range(datasets.num_environments(dataset))]
+            else:
+                all_test_envs = all_test_env_combinations(
+                    datasets.num_environments(dataset))
+            for test_envs in all_test_envs:
+                
+                for hparams_seed in range(n_hparams_from, n_hparams):
+                    arg_l=[]
+                    for trial_seed in range(n_trials):
+                        train_args = {}
+                        train_args['dataset'] = dataset
+                        train_args['algorithm'] = algorithm
+                        train_args['test_envs'] = test_envs
+                        train_args['holdout_fraction'] = holdout_fraction
+                        train_args['hparams_seed'] = hparams_seed
+                        train_args['data_dir'] = data_dir
+                        train_args['task'] = task
+                        train_args['trial_seed'] = trial_seed
+                        train_args['seed'] = misc.seed_hash(dataset,
+                            algorithm, test_envs, hparams_seed, trial_seed)
+                        if steps is not None:
+                            train_args['steps'] = steps
+                        if hparams is not None:
+                            train_args['hparams'] = hparams
+                        arg_l.append(train_args)
+                    args_lst.append(arg_l)
+    return args_list
 
 def ask_for_confirmation():
     response = input('Are you sure? (y/n) ')
@@ -150,6 +204,7 @@ if __name__ == "__main__":
     parser.add_argument('--command_launcher', type=str, required=True)
     parser.add_argument('--steps', type=int, default=None)
     parser.add_argument('--hparams', type=str, default=None)
+    parser.add_argument('--resume', action='store_true')
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
     parser.add_argument('--single_test_envs', action='store_true')
     parser.add_argument('--skip_confirmation', action='store_true')
@@ -169,8 +224,53 @@ if __name__ == "__main__":
         hparams=args.hparams
     )
 
-    jobs = [Job(train_args, args.output_dir) for train_args in args_list]
-
+    jobs = [Job(train_args, args.output_dir,args.resume) for train_args in args_list]
+    if(args.algorithms=='sharpbalance' and args.resume):
+        sp_arg_lst=make_args_list_sp(n_trials=args.n_trials,
+        dataset_names=args.datasets,
+        algorithms=args.algorithms,
+        n_hparams_from=args.n_hparams_from,
+        n_hparams=args.n_hparams,
+        steps=args.steps,
+        data_dir=args.data_dir,
+        task=args.task,
+        holdout_fraction=args.holdout_fraction,
+        single_test_envs=args.single_test_envs,
+        hparams=args.hparams)
+        for args in sp_arg_lst:
+            sharpnesses=[]
+            dirs=[] #differnent models
+            for arg in args:
+              
+                args_str = json.dumps(arg, sort_keys=True)
+                args_hash = hashlib.md5(args_str.encode('utf-8')).hexdigest()
+                dir= os.path.join(args.output_dir, args_hash)
+                dirs.append(dir)
+                path=os.path.join(args.output_dir,f'2500_sharpness.pkl')
+                file=open(path,'r')
+                sharpness=pickle.load(path)
+                sharpnesses.append(sharpness)   
+                         
+            env_shaprnesses=[]
+            for i in range(len(sharpnesses[0])):  #differnent env
+                
+                env_sharpness=[]
+                for j in range(len(sharpnesses)):  #differnet model
+                    env_sharpness.append(sharpnesses[j][i])
+                env_sharpnesses.append(env_sharpness)
+            for j in range(len(sharpnesses)):  #differnet model
+                for flat_ratio in [0.2,0.3,0.4,0.5,0.6]:
+                    indice=[]
+                    for i in range(len(sharpnesses[0])):  #differnent env
+                        env_sharpness=env_sharpnesses.append[i] #ith env
+                        idx=sam_idx_complemetary(env_sharpness,j,flat_ratio,ascend=False)
+                        indice.append(idx)
+                    path=os.path.join(dirs[j],f'{flat_ratio}_2500_normal_indice.pkl')
+                    filehandler = open(path,"wb")
+                    pickle.dump(indice,filehandler)
+                    
+                                                    
+    
     for job in jobs:
         print(job)
     print("{} jobs: {} done, {} incomplete, {} not launched.".format(
@@ -181,7 +281,7 @@ if __name__ == "__main__":
     )
 
     if args.command == 'launch':
-        to_launch = [j for j in jobs if j.state == Job.NOT_LAUNCHED]
+        to_launch = [j for j in jobs if j.state != Job.DONE]
         print(f'About to launch {len(to_launch)} jobs.')
         if not args.skip_confirmation:
             ask_for_confirmation()

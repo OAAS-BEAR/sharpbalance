@@ -1,0 +1,20 @@
+Incomplete: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/a96147e6402de3cce9d490e7cb0532d8 ('PACS', 'ERM', [0], 0)
+Incomplete: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/9b8ae9f4fff560dff7d1376560535715 ('PACS', 'ERM', [1], 0)
+Incomplete: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/973450a167d8098893fd584562d54efc ('PACS', 'ERM', [2], 0)
+Incomplete: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/933495576a58e17dd5804803abb18183 ('PACS', 'ERM', [3], 0)
+Not launched: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/bb2b1e131d21798120d07124c31a0d17 ('PACS', 'ERM', [0], 0)
+Not launched: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/2648a103a69e6b5b84ff8d7eb015fa96 ('PACS', 'ERM', [1], 0)
+Not launched: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/5ab7d40f976a167e7eef33d32efdaf4a ('PACS', 'ERM', [2], 0)
+Not launched: /data/yefan0726/data/domainbed/pacs/ERM/resnet50/a7a1ac031222777284398397e7954f6b ('PACS', 'ERM', [3], 0)
+8 jobs: 0 done, 4 incomplete, 4 not launched.
+About to launch 4 jobs.
+Are you sure? (y/n) Traceback (most recent call last):
+  File "/data/yefan0726/anaconda3/lib/python3.8/runpy.py", line 194, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/data/yefan0726/anaconda3/lib/python3.8/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/home/eecs/yefan0726/qunli/ensemble-of-averages/domainbed/scripts/sweep.py", line 188, in <module>
+    ask_for_confirmation()
+  File "/home/eecs/yefan0726/qunli/ensemble-of-averages/domainbed/scripts/sweep.py", line 132, in ask_for_confirmation
+    response = input('Are you sure? (y/n) ')
+OSError: [Errno 9] Bad file descriptor

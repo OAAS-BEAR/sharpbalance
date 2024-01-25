@@ -8,7 +8,7 @@ import random
 import sys
 import time
 import uuid
-
+import pickle
 import numpy as np
 import PIL
 import torch
@@ -44,12 +44,14 @@ if __name__ == "__main__":
     parser.add_argument('--test_envs', type=int, nargs='+', default=[0])
     parser.add_argument('--output_dir', type=str, default="train_output")
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
+    parser.add_argument('--sp_step',type=int,default=300)
+    parser.add_argument('--resume',action='store_true')
     parser.add_argument('--uda_holdout_fraction', type=float, default=0,
         help="For domain adaptation, % of test to use unlabeled for training.")
     parser.add_argument('--skip_model_save', action='store_true')
     parser.add_argument('--save_model_every_checkpoint', action='store_true')
     args = parser.parse_args()
-
+ 
     # If we ever want to implement checkpointing, just persist these values
     # every once in a while, and then load them from disk here.
     start_step = 0
@@ -71,7 +73,7 @@ if __name__ == "__main__":
     print('Args:')
     for k, v in sorted(vars(args).items()):
         print('\t{}: {}'.format(k, v))
-
+   
     if args.hparams_seed == 0:
         hparams = hparams_registry.default_hparams(args.algorithm, args.dataset)
     else:
@@ -121,12 +123,12 @@ if __name__ == "__main__":
 
         out, in_ = misc.split_dataset(env,
             int(len(env)*args.holdout_fraction),
-            misc.seed_hash(args.trial_seed, env_i))
+            misc.seed_hash(env_i))
 
         if env_i in args.test_envs:
-            uda, in_ = misc.split_dataset(in_,
+            uda, in_ = misc.split_dataset_original(in_,
                 int(len(in_)*args.uda_holdout_fraction),
-                misc.seed_hash(args.trial_seed, env_i))
+                misc.seed_hash(env_i))
 
         if hparams['class_balanced']:
             in_weights = misc.make_weights_for_balanced_classes(in_)
@@ -150,7 +152,7 @@ if __name__ == "__main__":
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(in_splits)
         if i not in args.test_envs]
-
+    
     uda_loaders = [InfiniteDataLoader(
         dataset=env,
         weights=env_weights,
@@ -158,12 +160,19 @@ if __name__ == "__main__":
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(uda_splits)
         if i in args.test_envs]
-
+    
+    sharpness_loader=[FastDataLoader(
+        dataset=env,
+        batch_size=5,
+        num_workers=dataset.N_WORKERS)
+        for i, (env, env_weights) in enumerate(in_splits)
+        if i not in args.test_envs]
     eval_loaders = [FastDataLoader(
         dataset=env,
         batch_size=64,
         num_workers=dataset.N_WORKERS)
         for env, _ in (in_splits + out_splits + uda_splits)]
+    
     eval_weights = [None for _, weights in (in_splits + out_splits + uda_splits)]
     eval_loader_names = ['env{}_in'.format(i)
         for i in range(len(in_splits))]
@@ -173,12 +182,27 @@ if __name__ == "__main__":
         for i in range(len(uda_splits))]
 
     algorithm_class = algorithms.get_algorithm_class(args.algorithm)
-    algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
-        len(dataset) - len(args.test_envs), hparams)
-
-    if algorithm_dict is not None:
+    if(args.algorithm!='sharpbalance'):
+        algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
+            len(dataset) - len(args.test_envs), hparams)
+    else:
+        normal_indice=[]
+        for i in range(len(train_loaders)):
+            normal_indice.append([])
+        algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
+            len(dataset) - len(args.test_envs), hparams,normal_indice)
+        
+    if(args.resume):
+        print("resuming model and normal indice")
+        start_step=args.sp_step+1
+        path=os.path.join(args.output_dir,f'model_sp_step{args.sp_step}.pkl')
+        algorithm_dict=torch.load(path)[model_dict]
         algorithm.load_state_dict(algorithm_dict)
-
+        path=os.path.join(args.output_dir,f'{hparams["flat_level"]}_{args.sp_step}_normal_indice.pkl')
+        file = open(path,'r')
+        normal_indice=pickle.load(path)
+        algorithm.normal_indice=normal_indice
+        
     algorithm.to(device)
 
     train_minibatches_iterator = zip(*train_loaders)
@@ -205,11 +229,20 @@ if __name__ == "__main__":
 
 
     last_results_keys = None
-    best_acc = -np.float('inf')
+    best_acc = -1
+    
+    #if(args.resume):
+    #    algorithm,index=load_model_and_index(args.output_dir)
+    #    start_step=args.sp_step+1
+    
     for step in range(start_step, n_steps):
         step_start_time = time.time()
-        minibatches_device = [(x.to(device), y.to(device))
-            for x,y in next(train_minibatches_iterator)]
+        if(args.algorithm!="sharpbalance"):
+            minibatches_device = [(x.to(device), y.to(device))
+                for _,(x,y) in next(train_minibatches_iterator)]
+        else:
+            minibatches_device = [(indice,x.to(device), y.to(device))
+                for indice,(x,y) in next(train_minibatches_iterator)]           
         if args.task == "domain_adaptation":
             uda_device = [x.to(device)
                 for x,_ in next(uda_minibatches_iterator)]
@@ -281,7 +314,15 @@ if __name__ == "__main__":
                 print('Saving best model...')
                 best_acc = agg_val_acc
                 save_checkpoint('best_model.pkl')
-
+        if(step==args.sp_step):
+            sharpness=[]
+            print('Saving sp model...')
+            save_checkpoint(f'model_sp_step{step}.pkl')
+            for i,loader in enumerate(sharpness_loader):
+                sharpness.append(misc.sharpness(algorithm, loader, device))
+            path=os.path.join(args.output_dir,f'{args.sp_step}_sharpness.pkl')
+            filehandler = open(path,"wb")
+            pickle.dump(sharpness,filehandler)
     save_checkpoint('model.pkl')
 
     with open(os.path.join(args.output_dir, 'done'), 'w') as f:

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
 from torch.autograd import Variable
-
+from domainbed.lib.sam import NSAM
 import copy
 import numpy as np
 from collections import defaultdict, OrderedDict
@@ -19,10 +19,11 @@ from domainbed import networks
 from domainbed.lib.misc import (
     random_pairs_of_minibatches, ParamDict, MovingAverage, l2_between_dicts
 )
-
+ 
 
 ALGORITHMS = [
     'ERM',
+    'sharpbalance',
     'Fish',
     'IRM',
     'GroupDRO',
@@ -80,6 +81,86 @@ class Algorithm(torch.nn.Module):
     def predict(self, x):
         raise NotImplementedError
 
+class sharpbalance(Algorithm):
+    def __init__(self, input_shape, num_classes, num_domains, hparams,normal_indice):
+        super(sharpbalance, self).__init__(input_shape, num_classes, num_domains,
+                                  hparams)
+        self.featurizer = networks.Featurizer(input_shape, self.hparams)
+        self.classifier = networks.Classifier(
+            self.featurizer.n_outputs,
+            num_classes,
+            self.hparams['nonlinear_classifier'])
+        self.normal_indice=normal_indice
+
+        self.network = nn.Sequential(self.featurizer, self.classifier)
+        self.base_optimizer = torch.optim.Adam
+        self.SAM=NSAM(self.network.parameters(),self.base_optimizer,rho=self.hparams["rho"],lr=self.hparams["lr"],weight_decay=self.hparams['weight_decay'])
+
+
+    def update(self, minibatches, unlabeled=None):
+        optimizer=self.SAM
+        #print(minibatches[0][0].shape)
+        flat_x=[]
+        flat_y=[]
+        normal_x=[]
+        normal_y=[]
+        optimizer.zero_grad()
+        for i,(indice ,x ,y) in enumerate(minibatches):
+            flat_indice=[]
+            normal_indice=[]
+            idx=self.normal_indice[i]
+            for i in range(x.shape[0]):
+                if(indice[i].data.item() in idx):
+                    normal_indice.append(i)
+                else:
+                    flat_indice.append(i)
+            flat_x.append(x[flat_indice])
+            flat_y.append(y[flat_indice])
+            normal_x.append(x[normal_indice])
+            normal_y.append(y[normal_indice])
+        flat_data=torch.cat(flat_x)
+        #print(flat_data.shape)
+        flat_target=torch.cat(flat_y)
+        normal_data=torch.cat(normal_x)
+        #print(normal_data.shape)
+        normal_target=torch.cat(normal_y)
+        flat_ratio=flat_data.shape[0]/(flat_data.shape[0]+normal_data.shape[0])
+        normal_ratio=normal_data.shape[0]/(flat_data.shape[0]+normal_data.shape[0])
+        total_loss=0
+        
+        if(normal_data.shape[0]>0):
+            output=self.predict(normal_data)
+            loss=F.cross_entropy(output,normal_target)
+            
+            loss=loss*normal_ratio
+            total_loss+=loss
+            loss.backward()
+            optimizer.normal_step(zero_grad=True)  
+        if(flat_data.shape[0]>0):
+    
+            output=self.predict(flat_data)
+
+            loss=F.cross_entropy(output,flat_target)
+            total_loss+=loss*flat_ratio
+            loss.backward()
+            optimizer.first_step(zero_grad=True)
+
+            output=self.predict(flat_data)
+            loss=F.cross_entropy(output,flat_target)
+            loss=loss*flat_ratio
+            loss.backward()
+            optimizer.second_step(zero_grad=False)
+        else:
+            optimizer.third_step(zero_grad=False)
+        return {'loss': total_loss.item()}
+
+            
+        
+
+    def predict(self, x):
+        return self.network(x)
+    
+    
 class ERM(Algorithm):
     """
     Empirical Risk Minimization (ERM)
@@ -102,7 +183,9 @@ class ERM(Algorithm):
         )
 
     def update(self, minibatches, unlabeled=None):
+        #print(minibatches[0][0].shape)
         all_x = torch.cat([x for x,y in minibatches])
+        #print(all_x.shape)
         all_y = torch.cat([y for x,y in minibatches])
         loss = F.cross_entropy(self.predict(all_x), all_y)
 

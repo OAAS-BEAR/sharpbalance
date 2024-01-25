@@ -12,9 +12,10 @@ from shutil import copyfile
 from collections import OrderedDict, defaultdict
 from numbers import Number
 import operator
-
+from functorch import make_functional_with_buffers, vmap, grad
 import numpy as np
 import torch
+import torch.nn as nn
 import tqdm
 from collections import Counter
 
@@ -109,6 +110,17 @@ def print_row(row, colwidth=10, latex=False):
         return str(x).ljust(colwidth)[:colwidth]
     print(sep.join([format_val(x) for x in row]), end_)
 
+class _SplitDataset_original(torch.utils.data.Dataset):
+    """Used by split_dataset"""
+    def __init__(self, underlying_dataset, keys):
+        super(_SplitDataset_original, self).__init__()
+        self.underlying_dataset = underlying_dataset
+        self.keys = keys
+    def __getitem__(self, key):
+        return self.underlying_dataset[self.keys[key]]
+    def __len__(self):
+        return len(self.keys)
+    
 class _SplitDataset(torch.utils.data.Dataset):
     """Used by split_dataset"""
     def __init__(self, underlying_dataset, keys):
@@ -116,7 +128,7 @@ class _SplitDataset(torch.utils.data.Dataset):
         self.underlying_dataset = underlying_dataset
         self.keys = keys
     def __getitem__(self, key):
-        return self.underlying_dataset[self.keys[key]]
+        return key,self.underlying_dataset[self.keys[key]]
     def __len__(self):
         return len(self.keys)
 
@@ -132,6 +144,19 @@ def split_dataset(dataset, n, seed=0):
     keys_1 = keys[:n]
     keys_2 = keys[n:]
     return _SplitDataset(dataset, keys_1), _SplitDataset(dataset, keys_2)
+
+def split_dataset_original(dataset, n, seed=0):
+    """
+    Return a pair of datasets corresponding to a random split of the given
+    dataset, with n datapoints in the first dataset and the rest in the last,
+    using the given random seed
+    """
+    assert(n <= len(dataset))
+    keys = list(range(len(dataset)))
+    np.random.RandomState(seed).shuffle(keys)
+    keys_1 = keys[:n]
+    keys_2 = keys[n:]
+    return _SplitDataset_original(dataset, keys_1), _SplitDataset_original(dataset, keys_2)
 
 def random_pairs_of_minibatches(minibatches):
     perm = torch.randperm(len(minibatches)).tolist()
@@ -156,7 +181,10 @@ def accuracy(network, loader, weights, device):
 
     network.eval()
     with torch.no_grad():
-        for x, y in loader:
+        for a, dt in loader:
+            #print(a)
+            #print(dt[1])
+            x,y=dt
             x = x.to(device)
             y = y.to(device)
             p = network.predict(x)
@@ -174,6 +202,43 @@ def accuracy(network, loader, weights, device):
     network.train()
 
     return correct / total
+
+def sharpness(algorithm,train_loader,device):
+    flat_trial=1
+    net=algorithm.network
+    net.eval()
+    flatness=torch.zeros(len(train_loader.dataset))
+    global fmodel
+    fmodel, params, buffers = make_functional_with_buffers(net)
+    ft_compute_grad = grad(compute_loss_stateless_model)
+    ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
+    
+    for trial in range(flat_trial):
+        for i, dt in enumerate((train_loader)):
+            #print(i)
+            idx,(data,target)=dt
+            #print(data.shape)
+            data,target=data.to(device, dtype=torch.float), target.to(device)             
+            ft_per_sample_grads = ft_compute_sample_grad(params, buffers, data, target)
+            ft_per_sample_grads=list(ft_per_sample_grads)
+            for j in range(len(ft_per_sample_grads)):
+                #print(ft_per_sample_grads[j].shape)
+                ft_per_sample_grads[j]=ft_per_sample_grads[j].view(data.shape[0],-1)            
+            grads=torch.cat(ft_per_sample_grads,dim=1)
+            fisher=grads.pow(2).sum(dim=1)
+            flatness[idx]+=fisher.cpu().detach()
+    flatness=flatness/flat_trial
+    return flatness.numpy()   
+ 
+def compute_loss_stateless_model (params, buffers, sample, target):
+    batch = sample.unsqueeze(0)
+    targets = target.unsqueeze(0)
+    loss_fn=nn.CrossEntropyLoss()
+    global fmodel
+    predictions = fmodel(params, buffers, batch) 
+    loss = loss_fn(predictions, targets)
+    return loss
+  
 
 class Tee:
     def __init__(self, fname, mode="a"):

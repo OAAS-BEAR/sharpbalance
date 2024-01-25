@@ -1,0 +1,2 @@
+
+python -m domainbed.scripts.sweep launch --data_dir /data/yefan0726/data --output_dir /data/yefan0726/data/domainbed/pacs/ERM/resnet50 --command_launcher multi_gpu --algorithms sharpbalance --datasets PACS --n_hparams 1 --n_trials 1 --single_test_envs --hparams '{"arch": "resnet50"}'

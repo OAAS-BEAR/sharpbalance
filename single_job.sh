@@ -1,0 +1,1 @@
+python -m domainbed.scripts.train --algorithm ERM --data_dir /data/yefan0726/data/PACS --dataset PACS --holdout_fraction 0.2 --hparams \'{"arch": "resnet50"}\' --hparams_seed 0 --output_dir /data/yefan0726/data/domainbed/pacs/ERM/resnet50/802c2057f8d867ccae7ec5c42c6e8389 --seed 1592993 --task domain_generalization --test_envs 3 --trial_seed 0

@@ -34,6 +34,7 @@ def _hparams(algorithm, dataset, random_seed):
     # TODO: nonlinear classifiers disabled
     _hparam('nonlinear_classifier', False,
             lambda r: bool(r.choice([False, False])))
+    
 
     # Algorithm-specific hparam definitions. Each block of code below
     # corresponds to exactly one algorithm.
@@ -47,6 +48,9 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('mlp_width', 256, lambda r: int(2 ** r.uniform(6, 10)))
         _hparam('mlp_depth', 3, lambda r: int(r.choice([3, 4, 5])))
         _hparam('mlp_dropout', 0., lambda r: r.choice([0., 0.1, 0.5]))
+    elif algorithm =='sharpbalance':
+        _hparam('rho', 0.05, lambda r: r.choice([0.1,0.2, 0.5]))
+        _hparam('flat_level', 0.2, lambda r: r.choice([0.2,0.3,0.4,0.5]))
 
     elif algorithm == 'Fish':
         _hparam('meta_lr', 0.5, lambda r:r.choice([0.05, 0.1, 0.5]))
@@ -125,6 +129,7 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('is_normalized', False, lambda r: False)
         _hparam('is_project', False, lambda r: False)
         _hparam('is_flipped', True, lambda r: True)
+
 
     # Dataset-and-algorithm-specific hparam definitions. Each block of code
     # below corresponds to exactly one hparam. Avoid nested conditionals.
